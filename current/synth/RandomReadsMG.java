@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -153,6 +154,11 @@ public class RandomReadsMG{
 		ffout2=FileFormat.testOutput(out2, FileFormat.FASTQ, extout, true, overwrite, append, false);
 		if("auto".equalsIgnoreCase(taxTreeFile)){taxTreeFile=TaxTree.defaultTreeFile();}
 		tree=TaxTree.loadTaxTree(taxTreeFile, outstream, true, false);
+		
+		// Initialize circularRandom if circular genomes are specified
+		if(circularRandom == null && !circularIdentifiers.isEmpty()) {
+			circularRandom = new Random(seed >= 0 ? seed : System.currentTimeMillis());
+		}
 	}
 
 	/*--------------------------------------------------------------*/
@@ -295,16 +301,58 @@ public class RandomReadsMG{
 			}
 
 			else if(b!=null && (a.startsWith("cov_") || a.startsWith("depth_"))){
-				float f=Float.parseFloat(b);
-				String name=split[0].substring(a.indexOf('_')+1);
-				System.err.println("Setting custom depth "+f+" for "+name);
-				depthMap.put(name, f);
-			}else if(b!=null && Tools.isNumeric(b) && new File(split[0]).isFile()){
-				float f=Float.parseFloat(b);
-				inputFiles.add(split[0]);
-				String name=ReadWrite.stripPath(split[0]);
-				System.err.println("Setting custom depth "+f+" for "+name);
-				depthMap.put(name, f);
+				boolean isCircular = false;
+				String coverageValue = b;
+				
+				// Check if coverage value ends with 'c' suffix for circular genomes
+				if(coverageValue.endsWith("c")) {
+					isCircular = true;
+					coverageValue = coverageValue.substring(0, coverageValue.length() - 1);
+				}
+				
+				try {
+					float f = Float.parseFloat(coverageValue);
+					String name = split[0].substring(a.indexOf('_')+1);
+					
+					// Add to circular identifiers if marked as circular
+					if(isCircular) {
+						circularIdentifiers.add(name);
+						System.err.println("Setting custom depth "+f+" for circular genome "+name);
+					} else {
+						System.err.println("Setting custom depth "+f+" for "+name);
+					}
+					depthMap.put(name, f);
+				} catch(NumberFormatException e) {
+					throw new RuntimeException("Error: Invalid coverage value '" + b + "' for " + split[0] +
+						". Expected format: number or numberc (for circular genomes)");
+				}
+			}else if(b!=null && new File(split[0]).isFile()){
+				boolean isCircular = false;
+				String coverageValue = b;
+				
+				// Check if coverage value ends with 'c' suffix for circular genomes
+				if(coverageValue.endsWith("c")) {
+					isCircular = true;
+					coverageValue = coverageValue.substring(0, coverageValue.length() - 1);
+				}
+				
+				try {
+					float f = Float.parseFloat(coverageValue);
+					inputFiles.add(split[0]);
+					String name = ReadWrite.stripPath(split[0]);
+					
+					// Add to circular identifiers if marked as circular
+					if(isCircular) {
+						circularIdentifiers.add(name);
+						System.err.println("Setting custom depth "+f+" for circular genome "+name);
+					} else {
+						System.err.println("Setting custom depth "+f+" for "+name);
+					}
+					depthMap.put(name, f);
+				} catch(NumberFormatException e) {
+					throw new RuntimeException("Error: Invalid coverage value '" + b + "' for file " + split[0] +
+						". Expected format: number or numberc (for circular genomes)");
+				}
 			}else if(a.equals("mode") || a.equals("depthmode")){
 				depthMode=Tools.find(b.toUpperCase(), modes);
 				assert(depthMode>=0) : depthMode;
@@ -1182,13 +1230,86 @@ public class RandomReadsMG{
 			}
 
 			lastStart=lastInsert=lastStrand-1; // Reset PCR duplicates
+			float variance=varyDepthPerContig ? 0 : randy.nextFloat()*depthVariance;
+
+			// Determine if this contig is circular
+			String identifier;
+			if(taxID > 0) {
+				identifier = "tid_" + taxID;
+			} else {
+				identifier = fname;
+			}
+			boolean isCircular = circularIdentifiers.contains(identifier);
+
+			//			System.err.println("Generating reads for depth-"+depth+" contig "+contig.id + " (circular=" + isCircular + ")");
+
+			if(isCircular) {
+				// For circular genomes: divide coverage by 2 and run two simulations with rotation
+				float coveragePerRun = depth / 2.0f;
+				long totalReadsGenerated = 0;
+				long totalBasesGenerated = 0;
+
+				// Run 1: Original sequence
+				long[] results1 = simulateReadsFromLinearSequence(contig.id, contig, coveragePerRun, taxID, fnum, fname, variance, ros);
+				totalReadsGenerated += results1[0];
+				totalBasesGenerated += results1[1];
+
+				// Run 2: Rotated sequence
+				if(contig.length() > 0) {
+					// Generate a random breakpoint between 0 and sequence length-1
+					int breakpoint = randy.nextInt(contig.length());
+					
+					// Create rotated sequence: sequence.substring(breakpoint) + sequence.substring(0, breakpoint)
+					byte[] rotatedBases = new byte[contig.length()];
+					System.arraycopy(contig.bases, breakpoint, rotatedBases, 0, contig.length() - breakpoint);
+					System.arraycopy(contig.bases, 0, rotatedBases, contig.length() - breakpoint, breakpoint);
+					
+					// Create a new Read object with the rotated sequence
+					Read rotatedContig = new Read(rotatedBases, null, contig.id, contig.numericID);
+					
+					// Simulate reads from the rotated sequence
+					long[] results2 = simulateReadsFromLinearSequence(contig.id, rotatedContig, coveragePerRun, taxID, fnum, fname, variance, ros);
+					totalReadsGenerated += results2[0];
+					totalBasesGenerated += results2[1];
+				}
+
+				readsOutT+=totalReadsGenerated;
+				basesOutT+=totalBasesGenerated;
+			} else {
+				// For linear genomes: single run with full coverage
+				long[] results = simulateReadsFromLinearSequence(contig.id, contig, depth, taxID, fnum, fname, variance, ros);
+				long readsGenerated = results[0];
+				long basesGenerated = results[1];
+
+				readsOutT+=readsGenerated;
+				basesOutT+=basesGenerated;
+			}
+
+			//			System.err.println("Generated reads for depth-"+depth+" contig "+contig.id);
+		}
+
+		/**
+		 *Simulates reads from a linear sequence with the specified parameters.
+		 *Handles all the existing simulation logic for a single contig including fragment
+		 *sampling, error modeling, read pair generation, and writing to output.
+		 *
+		 *@param contigName Name of the contig for identification
+		 *@param contig The contig sequence to generate reads from
+		 *@param depth Coverage depth to generate
+		 *@param taxID Taxonomy ID for read headers
+		 *@param fnum File number for read headers
+		 *@param fname File name for read headers
+		 *@param variance Variance value for depth variation
+		 *@param ros Output stream for generated reads
+		 *@return Array containing [readsGenerated, basesGenerated]
+		 */
+		private long[] simulateReadsFromLinearSequence(String contigName, Read contig, float depth,
+				int taxID, int fnum, String fname, float variance, ConcurrentReadOutputStream ros){
+			final int basesPerRead=(paired ? 2*readlen : readlen);
 			long basesToGenerate=(maxReads>0 ? maxReads*basesPerRead : (long)(depth*contig.length()));
 			long readsGenerated=0;
 			long basesGenerated=0;
 			ArrayList<Read> list=new ArrayList<Read>(200);
-			float variance=varyDepthPerContig ? 0 : randy.nextFloat()*depthVariance;
-
-			//			System.err.println("Generating "+basesToGenerate+" for depth-"+depth+" contig "+contig.id);
 
 			for(long i=0; basesGenerated<basesToGenerate; i++){
 				Read r=generateRead(contig, i, taxID, fnum, contig.numericID, variance, fname);
@@ -1203,10 +1324,8 @@ public class RandomReadsMG{
 				}
 			}
 			if(list.size()>0){if(ros!=null){ros.add(list, 0);}}
-			//			System.err.println("Generated "+basesGenerated+" for depth-"+depth+" contig "+contig.id);
 
-			readsOutT+=readsGenerated;
-			basesOutT+=basesGenerated;
+			return new long[]{readsGenerated, basesGenerated};
 		}
 
 		/**
@@ -1608,6 +1727,10 @@ public class RandomReadsMG{
 	private byte[] fragadapter1="AGATCGGAAGAGCACACGTCTGAACTCCAGTCACTAGCTTATCTCGTATGCCGTCTTCTGC".getBytes();
 	/** Reverse read adapter sequence for contamination */
 	private byte[] fragadapter2="AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGTAGATCTCGGTGGTCGCCGTATCATT".getBytes();
+	/** Set of identifiers for genomes to be treated as circular */
+	private HashSet<String> circularIdentifiers = new HashSet<String>();
+	/** Random number generator for generating breakpoints in circular mode */
+	private Random circularRandom = null;
 	/*--------------------------------------------------------------*/
 	/*----------------         Final Fields         ----------------*/
 	/*--------------------------------------------------------------*/
