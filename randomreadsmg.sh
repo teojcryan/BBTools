@@ -6,14 +6,15 @@ Written by Brian Bushnell
 Last modified December 2, 2025
 
 Description:  Generates synthetic reads from a set of fasta assemblies.
-Each assembly is assigned a random coverage level, with optional custom 
+Each assembly is assigned a random coverage level, with optional custom
 coverage for specific genomes.  Reads headers will contain the TaxID
 of the originating genome, if the filename starts with 'tid_x_',
-where x is a positive integer.
+where x is a positive integer. Supports circular genome simulation
+by adding 'c' suffix to coverage parameters.
 
 Usage:  randomreadsmg.sh *.fa out=reads.fq.gz
 or
-randomreadsmg.sh ecoli.fa=40 mruber.fa=0.1 phix.fa=10 out=reads.fq.gz
+randomreadsmg.sh ecoli.fa=40 mruber.fa=0.1 phix.fa=10c out=reads.fq.gz
 
 File parameters:
 in=<file,file>  Assembly input.  Can be a single file, a directory of files,
@@ -32,8 +33,10 @@ cov_x=          Set a custom coverage level for the file named x.
                 x can alternatively be the taxID if the filename starts
                 with tid_x_; e.g. cov_foo.fa=5 for foo.fa, or cov_7=5
                 for file tid_7_foo.fa
+                Add 'c' suffix to treat genome as circular (e.g., cov_7=5c).
 <file>=x        Alternate way to set custom depth; file will get depth x.
 circular=f      Treat each contig as circular, and create spanning reads.
+                Add 'c' suffix to treat genome as circular (e.g., file.fa=10c).
 threads=        Set the max number of threads; default is logical core count.
                 By default each input file uses 1 thread.  This flag will
                 also force multithreaded processing when there is exactly 1
