@@ -22,7 +22,6 @@ import shared.PreParser;
 import shared.Shared;
 import shared.Timer;
 import shared.Tools;
-import shared.Vector;
 import stream.ConcurrentReadInputStream;
 import stream.ConcurrentReadOutputStream;
 import stream.FASTQ;
@@ -1006,7 +1005,8 @@ public class RandomReadsMG{
 			//Generate from heavy tail (exponential)
 			double scale=meanLength*2; //Scale factor produces longer tail reads
 			double x=-Math.log(randy.nextDouble())*scale;
-			return (int)Math.min(x, maxLength);
+			// Apply both minimum and maximum bounds
+			return Math.max(minLength, (int)Math.min(x, maxLength));
 		}else{
 			//Generate from log-normal core distribution
 			double sigma=0.5;
@@ -1014,6 +1014,41 @@ public class RandomReadsMG{
 			double logLength=mu+randy.nextGaussian()*sigma;
 			return Math.max(minLength, (int)Math.min(Math.exp(logLength), maxLength));
 		}
+	}
+
+	/**
+	 *Validates that a read meets both minimum and maximum length requirements.
+	 *If the read fails validation, logs a warning message and returns false.
+	 *This method should be called after all read processing is complete.
+	 *
+	 *@param r The read to validate
+	 *@param minLength Minimum allowable read length
+	 *@param maxLength Maximum allowable read length
+	 *@param readType Type of read for error reporting (e.g., "ONT", "PacBio", "Illumina")
+	 *@return true if read passes validation, false otherwise
+	 */
+	private boolean validateReadLength(Read r, int minLength, int maxLength, String readType){
+		if(r == null || r.bases == null){return false;}
+		
+		final int readLength = r.length();
+		
+		if(readLength < minLength){
+			if(verbose || loud){
+				System.err.println("Warning: " + readType + " read length " + readLength +
+					" is below minimum " + minLength + ". Discarding read: " + r.id);
+			}
+			return false;
+		}
+		
+		if(readLength > maxLength){
+			if(verbose || loud){
+				System.err.println("Warning: " + readType + " read length " + readLength +
+					" exceeds maximum " + maxLength + ". Discarding read: " + r.id);
+			}
+			return false;
+		}
+		
+		return true;
 	}
 
 	/*--------------------------------------------------------------*/
@@ -1199,20 +1234,36 @@ public class RandomReadsMG{
 		 *@param variance Variance value for depth variation
 		 *@return The generated read or null if skipped
 		 */
-		private Read generateLongRead(Read contig, long rnum, int taxID, 
+		private Read generateLongRead(Read contig, long rnum, int taxID,
 				int fnum, long cnum, float variance, String fname){
 			final boolean novel=(pcrRate<=0 || lastInsert<1 || randy.nextFloat()>=pcrRate);
 			int insert=lastInsert, start=lastStart, strand=lastStrand;
 
 			if(novel){
-				if(platform==PACBIO){
-					insert=generatePacBioHiFiLength(minLength, meanLength, maxLength, pacBioLengthSigma, randy);
-				}else{
-					insert=generateONTLength(minLength, meanLength, maxLength, ontLongTailFactor, randy);
-				}
-				if(insert>=contig.length()){return null;}
-				start=randy.nextInt(contig.length()-insert);
-				strand=randy.nextInt(2);
+				// Generate initial length with retry logic to ensure minimum length after processing
+				int attempts=0;
+				int finalLength;
+				do{
+					if(platform==PACBIO){
+						insert=generatePacBioHiFiLength(minLength, meanLength, maxLength, pacBioLengthSigma, randy);
+					}else{
+						insert=generateONTLength(minLength, meanLength, maxLength, ontLongTailFactor, randy);
+					}
+					if(insert>=contig.length()){return null;}
+					start=randy.nextInt(contig.length()-insert);
+					strand=randy.nextInt(2);
+					
+					// Estimate final length after processing (conservative estimate)
+					int paddedLen=insert+(indelRate>0 ? 20 : 0);
+					finalLength = paddedLen;
+					attempts++;
+					
+					// Prevent infinite loops
+					if(attempts>100){
+						System.err.println("Warning: Unable to generate valid long read after 100 attempts for contig " + contig.id);
+						return null;
+					}
+				} while(finalLength < minLength);
 
 				// Cache for potential duplicates
 				lastInsert=insert;
@@ -1225,13 +1276,21 @@ public class RandomReadsMG{
 					|| start+paddedLen>contig.length() || start<0){return null;}
 
 			byte[] bases=Arrays.copyOfRange(contig.bases, start, start+paddedLen);
-			if(strand==1){Vector.reverseComplementInPlaceFast(bases);}
+			if(strand==1){AminoAcid.reverseComplementBasesInPlace(bases);}
 			if(randomPriming && !RandomHexamer.keep(bases, randy)){return null;}
 			String header=makeHeader(start, strand, paddedLen, taxID, fnum, cnum, 0, novel?0:1, fname);
 			Read r=new Read(bases, null, header, rnum);
 			if(addErrors){mutateLongRead(r, sRate, iRate, dRate, hRate, randy);}
 			if(subRate>0){addSubs(r, subRate, randy);}
 			if(indelRate>0){addIndels(r, indelRate, paddedLen, meanQScore, qScoreRange, randy);}
+			
+			// Final validation - if still too short after processing, regenerate
+			String readType = (platform==ONT) ? "ONT" : "PacBio";
+			if(!validateReadLength(r, minLength, maxLength, readType)){
+				// Instead of discarding, regenerate the read to preserve distribution
+				return generateLongRead(contig, rnum, taxID, fnum, cnum, variance, fname);
+			}
+			
 			return r;
 		}
 
@@ -1265,13 +1324,20 @@ public class RandomReadsMG{
 			if(skip((start+insert)/2, contig.length(), variance) 
 					|| start+paddedLen>=contig.length() || start<0){return null;}
 			byte[] bases=Arrays.copyOfRange(contig.bases, start, start+paddedLen);
-			if(strand==1){Vector.reverseComplementInPlaceFast(bases);}
+			if(strand==1){AminoAcid.reverseComplementBasesInPlace(bases);}
 			if(randomPriming && !RandomHexamer.keep(bases, randy)){return null;}
 			String header=makeHeader(start, strand, insert, taxID, fnum, cnum, 0, novel?0:1, fname);
 			Read r=new Read(bases, null, header, rnum);
 			if(addErrors){mutateIllumina(r, meanQScore, qScoreRange, randy);}
 			if(subRate>0){addSubs(r, subRate, randy);}
 			if(indelRate>0){addIndels(r, indelRate, readlen, meanQScore, qScoreRange, randy);}
+			
+			// Validate final read length meets minimum and maximum requirements
+			if(!validateReadLength(r, readlen, readlen, "Illumina")){
+				// Instead of discarding, regenerate the read to preserve distribution
+				return generateReadSingle(contig, rnum, taxID, fnum, cnum, variance, fname);
+			}
+			
 			return r;
 		}
 
@@ -1314,7 +1380,7 @@ public class RandomReadsMG{
 
 			byte[] bases1=Arrays.copyOfRange(contig.bases, start1, start1+paddedLen);
 			byte[] bases2=Arrays.copyOfRange(contig.bases, start2, start2+paddedLen);
-			Vector.reverseComplementInPlaceFast(bases2);
+			AminoAcid.reverseComplementBasesInPlace(bases2);
 			if(strand==1){
 				byte[] temp=bases1;
 				bases1=bases2;
@@ -1347,6 +1413,14 @@ public class RandomReadsMG{
 				addIndels(r1, indelRate, readlen, meanQScore, qScoreRange, randy);
 				addIndels(r2, indelRate, readlen, meanQScore, qScoreRange, randy);
 			}
+			
+			// Validate final read lengths meet minimum and maximum requirements
+			if(!validateReadLength(r1, readlen, readlen, "Illumina") ||
+			   !validateReadLength(r2, readlen, readlen, "Illumina")){
+				// Instead of discarding, regenerate the read pair to preserve distribution
+				return generateReadPair(contig, rnum, taxID, fnum, cnum, variance, fname);
+			}
+			
 			return r1;
 		}
 
