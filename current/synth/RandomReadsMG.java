@@ -296,6 +296,10 @@ public class RandomReadsMG{
 				addAdapters=Parse.parseBoolean(b);
 			}else if(a.equals("pcr") || a.equals("pcrrate")){
 				pcrRate=Float.parseFloat(b);
+			}else if(a.equals("out") || a.equals("out1")){
+				parser.out1=b;
+			}else if(a.equals("out2")){
+				parser.out2=b;
 			}
 
 			else if(b!=null && (a.startsWith("cov_") || a.startsWith("depth_"))){
@@ -324,32 +328,35 @@ public class RandomReadsMG{
 					throw new RuntimeException("Error: Invalid coverage value '" + b + "' for " + split[0] +
 						". Expected format: number or numberc (for circular genomes)");
 				}
-			}else if(b!=null && new File(split[0]).isFile()){
-				boolean isCircular = false;
-				String coverageValue = b;
-				
-				// Check if coverage value ends with 'c' suffix for circular genomes
-				if(coverageValue.endsWith("c")) {
-					isCircular = true;
-					coverageValue = coverageValue.substring(0, coverageValue.length() - 1);
-				}
-				
-				try {
-					float f = Float.parseFloat(coverageValue);
-					inputFiles.add(split[0]);
-					String name = ReadWrite.stripPath(split[0]);
+			}else if(b!=null){
+				File f = new File(split[0]);
+				if(f.isFile()){
+					boolean isCircular = false;
+					String coverageValue = b;
 					
-					// Add to circular identifiers if marked as circular
-					if(isCircular) {
-						circularIdentifiers.add(name);
-						System.err.println("Setting custom depth "+f+" for circular genome "+name);
-					} else {
-						System.err.println("Setting custom depth "+f+" for "+name);
+					// Check if coverage value ends with 'c' suffix for circular genomes
+					if(coverageValue.endsWith("c")) {
+						isCircular = true;
+						coverageValue = coverageValue.substring(0, coverageValue.length() - 1);
 					}
-					depthMap.put(name, f);
-				} catch(NumberFormatException e) {
-					throw new RuntimeException("Error: Invalid coverage value '" + b + "' for file " + split[0] +
-						". Expected format: number or numberc (for circular genomes)");
+					
+					try {
+						float f_val = Float.parseFloat(coverageValue);
+						inputFiles.add(split[0]);
+						String name = ReadWrite.stripPath(split[0]);
+						
+						// Add to circular identifiers if marked as circular
+						if(isCircular) {
+							circularIdentifiers.add(name);
+							System.err.println("Setting custom depth "+f_val+" for circular genome "+name);
+						} else {
+							System.err.println("Setting custom depth "+f_val+" for "+name);
+						}
+						depthMap.put(name, f_val);
+					} catch(NumberFormatException e) {
+						throw new RuntimeException("Error: Invalid coverage value '" + b + "' for file " + split[0] +
+							". Expected format: number or numberc (for circular genomes)");
+					}
 				}
 			}else if(a.equals("mode") || a.equals("depthmode")){
 				depthMode=Tools.find(b.toUpperCase(), modes);
@@ -549,7 +556,9 @@ public class RandomReadsMG{
 	 *@return Configured and started ConcurrentReadOutputStream, or null if no output specified
 	 */
 	private ConcurrentReadOutputStream makeCros(){
-		if(ffout1==null){return null;}
+		if(ffout1==null){
+			return null;
+		}
 
 		//Set output buffer size
 		final int buff=4;
@@ -558,7 +567,7 @@ public class RandomReadsMG{
 		if(paired && out2==null){
 			outstream.println("Writing interleaved.");
 		}
-
+		
 		final ConcurrentReadOutputStream ros=ConcurrentReadOutputStream.getStream(
 				ffout1, ffout2, qfout1, qfout2, buff, null, false);
 		ros.start(); //Start the stream
@@ -1276,11 +1285,17 @@ public class RandomReadsMG{
 					basesGenerated+=r.pairLength();
 				}
 				if(list.size()>=200){
-					if(ros!=null){ros.add(list, 0);}
+					if(ros!=null){
+						ros.add(list, 0);
+					}
 					list=new ArrayList<Read>(200);
 				}
 			}
-			if(list.size()>0){if(ros!=null){ros.add(list, 0);}}
+			if(list.size()>0){
+				if(ros!=null){
+					ros.add(list, 0);
+				}
+			}
 
 			return new long[]{readsGenerated, basesGenerated};
 		}
