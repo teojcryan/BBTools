@@ -145,9 +145,13 @@ public class RandomReadsMG{
 		}
 
 		validateParams();
+		
+		// Validate circular configurations to prevent conflicts
+		validateCircularConfigurations();
+		
 		doPoundReplacement(); //Replace # with 1 and 2
 		checkFileExistence(); //Ensure files can be read and written
-		checkStatics(); //Adjust file-related static fields as needed for this program 
+		checkStatics(); //Adjust file-related static fields as needed for this program
 
 		//Create output FileFormat objects
 		ffout1=FileFormat.testOutput(out1, FileFormat.FASTQ, extout, true, overwrite, append, false);
@@ -155,10 +159,6 @@ public class RandomReadsMG{
 		if("auto".equalsIgnoreCase(taxTreeFile)){taxTreeFile=TaxTree.defaultTreeFile();}
 		tree=TaxTree.loadTaxTree(taxTreeFile, outstream, true, false);
 		
-		// Initialize circularRandom if circular genomes are specified
-		if(circularRandom == null && !circularIdentifiers.isEmpty()) {
-			circularRandom = new Random(seed >= 0 ? seed : System.currentTimeMillis());
-		}
 	}
 
 	/*--------------------------------------------------------------*/
@@ -461,6 +461,75 @@ public class RandomReadsMG{
 	private boolean validateParams(){
 		//		assert(false) : "TODO";
 		return true;
+	}
+	
+	/**
+	 *Validates circular genome configurations to prevent conflicts between different
+	 *circular approaches. Warns users about potentially conflicting configurations
+	 *that could cause unexpected behavior in read generation.
+	 */
+	private void validateCircularConfigurations() {
+		// Check for potential conflicts between global circular flag and specific circular identifiers
+		if(circular && !circularIdentifiers.isEmpty()) {
+			System.err.println("WARNING: Global circular flag is enabled along with specific circular identifiers.");
+			System.err.println("  The identifier-based circular approach will take precedence over the global flag.");
+			System.err.println("  Circular identifiers: " + circularIdentifiers.toString());
+			System.err.println("  CONSIDER: Using only one approach to avoid confusion and potential conflicts.");
+			System.err.println("  RECOMMENDATION: Disable global circular flag when using identifier-based approach.");
+		}
+		
+		// Check for consistency in random seed usage
+		if(seed >= 0 && !circularIdentifiers.isEmpty()) {
+			System.err.println("INFO: Using deterministic seed " + seed + " for circular genome processing.");
+			System.err.println("  This ensures reproducible breakpoint selection for circular genomes.");
+			System.err.println("  Each circular genome will use the same seed for consistent rotation points.");
+		} else if(seed >= 0 && circular) {
+			System.err.println("INFO: Using deterministic seed " + seed + " for global circular processing.");
+			System.err.println("  This ensures reproducible results when duplicating sequences.");
+		}
+		
+		// Validate depth settings for circular genomes
+		if(circular && (minDepth != maxDepth)) {
+			System.err.println("NOTE: Using global circular flag with variable depth settings.");
+			System.err.println("  Coverage will be halved (depth/2.0f) for all circular genomes.");
+			System.err.println("  This maintains equivalent coverage despite sequence duplication.");
+		}
+		
+		// Check for potential issues with very small contigs
+		if(circular && minDepth < 2.0f) {
+			System.err.println("WARNING: Low depth settings (" + minDepth + ") with circular genomes may result in insufficient coverage.");
+			System.err.println("  Circular genomes use depth/2.0f per simulation run, which may be too low.");
+			System.err.println("  RECOMMENDATION: Increase minimum depth to at least 2.0 for circular genomes.");
+		}
+		
+		// Additional validation for identifier-based circular genomes
+		if(!circularIdentifiers.isEmpty()) {
+			System.err.println("INFO: Identifier-based circular processing enabled for " + circularIdentifiers.size() + " genomes.");
+			System.err.println("  Each circular genome will undergo two simulation runs with rotation.");
+			System.err.println("  Coverage is automatically halved (depth/2.0f) for each run to maintain total depth.");
+			
+			// Check for potential issues with read length vs circular genome size
+			if(readlen > 0) {
+				System.err.println("INFO: Read length is " + readlen + " bp.");
+				System.err.println("  Ensure circular genomes are longer than " + (readlen * 2) + " bp for optimal results.");
+			}
+		}
+		
+		// Check for potential issues with paired-end reads and circular genomes
+		if(circular && paired) {
+			System.err.println("INFO: Using paired-end reads with circular genomes.");
+			System.err.println("  Insert size should be less than circular genome length for proper simulation.");
+			if(avgInsert > 0) {
+				System.err.println("  Current average insert size: " + avgInsert + " bp");
+			}
+		}
+		
+		// Check for potential issues with very small circular genomes
+		if(!circularIdentifiers.isEmpty() && readlen > 0) {
+			System.err.println("WARNING: Small circular genomes may not generate sufficient reads.");
+			System.err.println("  Minimum recommended circular genome length is " + (readlen * 4) + " bp.");
+			System.err.println("  Shorter genomes may result in reduced read diversity.");
+		}
 	}
 
 	/*--------------------------------------------------------------*/
@@ -1220,12 +1289,30 @@ public class RandomReadsMG{
 		 *@param fnum File number for read headers
 		 */
 		private void processContig(Read contig, float depth, int taxID, int fnum, String fname){
-			if(circular) {
+			// Determine if this contig is circular
+			String identifier;
+			if(taxID > 0) {
+				identifier = "tid_" + taxID;
+			} else {
+				identifier = fname;
+			}
+			boolean isCircular = circularIdentifiers.contains(identifier);
+			
+			// Mutual exclusion check: ensure only one circular approach is used
+			if(circular && isCircular) {
+				System.err.println("Warning: Both global circular flag and circular identifier detected for " + identifier +
+					". Using identifier-based circular approach and ignoring global flag.");
+				circular = false;
+			}
+			
+			// Apply global circular processing if enabled (but not for identifier-based circular genomes)
+			if(circular && !isCircular) {
 				bb.clear().append(contig.bases).append(contig.bases);
 				contig.bases=bb.toBytes();
 				bb.clear();
-				depth*=0.5f;
+				depth = depth / 2.0f;  // Standardize to use depth/2.0f for consistency
 			}
+			
 			final int basesPerRead=(paired ? 2*readlen : readlen);
 			readsInT++;
 			basesInT+=contig.length();
@@ -1240,15 +1327,6 @@ public class RandomReadsMG{
 
 			lastStart=lastInsert=lastStrand-1; // Reset PCR duplicates
 			float variance=varyDepthPerContig ? 0 : randy.nextFloat()*depthVariance;
-
-			// Determine if this contig is circular
-			String identifier;
-			if(taxID > 0) {
-				identifier = "tid_" + taxID;
-			} else {
-				identifier = fname;
-			}
-			boolean isCircular = circularIdentifiers.contains(identifier);
 
 			//			System.err.println("Generating reads for depth-"+depth+" contig "+contig.id + " (circular=" + isCircular + ")");
 
@@ -1265,7 +1343,7 @@ public class RandomReadsMG{
 
 				// Run 2: Rotated sequence
 				if(contig.length() > 0) {
-					// Generate a random breakpoint between 0 and sequence length-1
+					// Use the thread-local random generator for consistency with global circular approach
 					int breakpoint = randy.nextInt(contig.length());
 					
 					// Create rotated sequence: sequence.substring(breakpoint) + sequence.substring(0, breakpoint)
@@ -1286,7 +1364,9 @@ public class RandomReadsMG{
 				basesOutT+=totalBasesGenerated;
 			} else {
 				// For linear genomes: single run with full coverage
-				long[] results = simulateReadsFromLinearSequence(contig.id, contig, depth, taxID, fnum, fname, variance, ros);
+				// For globally circular genomes, also use depth/2.0f for consistency
+				float effectiveDepth = circular ? depth / 2.0f : depth;
+				long[] results = simulateReadsFromLinearSequence(contig.id, contig, effectiveDepth, taxID, fnum, fname, variance, ros);
 				long readsGenerated = results[0];
 				long basesGenerated = results[1];
 
@@ -1744,8 +1824,6 @@ public class RandomReadsMG{
 	private byte[] fragadapter2="AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGTAGATCTCGGTGGTCGCCGTATCATT".getBytes();
 	/** Set of identifiers for genomes to be treated as circular */
 	private HashSet<String> circularIdentifiers = new HashSet<String>();
-	/** Random number generator for generating breakpoints in circular mode */
-	private Random circularRandom = null;
 	/*--------------------------------------------------------------*/
 	/*----------------         Final Fields         ----------------*/
 	/*--------------------------------------------------------------*/
