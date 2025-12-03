@@ -254,8 +254,8 @@ public class RandomReadsMG{
 				subRate=Float.parseFloat(b);
 			}else if(a.equals("indelrate")){
 				indelRate=Float.parseFloat(b);
-			}else if(a.equalsIgnoreCase("pacBioLengthSigma") || a.equals("pbsigma") || a.equals("pacbiosigma")){
-				pacBioLengthSigma=Float.parseFloat(b);
+			}else if(a.equalsIgnoreCase("logNormalSigma") || a.equals("lnsigma") || a.equals("pbsigma")){
+				logNormalSigma=Float.parseFloat(b);
 			}else if(a.equalsIgnoreCase("ontLongTailFactor") || a.equals("tailfactor")){
 				ontLongTailFactor=Float.parseFloat(b);
 			}else if(a.equalsIgnoreCase("srate")){
@@ -1057,7 +1057,7 @@ public class RandomReadsMG{
 	 *@param randy Random number generator for consistent reproducible results
 	 *@return Generated read length following ONT-like mixed distribution
 	 */
-	public static int generateONTLength(int minLength, int meanLength, int maxLength, double longTailFactor, Random randy){
+	public static int generateONTLength(int minLength, int meanLength, int maxLength, double longTailFactor, double ontSigma, Random randy){
 		//Use mixed distribution approach
 		if(randy.nextDouble()<longTailFactor){
 			//Generate from heavy tail (exponential)
@@ -1067,7 +1067,7 @@ public class RandomReadsMG{
 			return Math.max(minLength, (int)Math.min(x, maxLength));
 		}else{
 			//Generate from log-normal core distribution
-			double sigma=0.5;
+			double sigma=ontSigma;
 			double mu=Math.log(meanLength)-0.5*sigma*sigma;
 			double logLength=mu+randy.nextGaussian()*sigma;
 			return Math.max(minLength, (int)Math.min(Math.exp(logLength), maxLength));
@@ -1341,9 +1341,9 @@ public class RandomReadsMG{
 
 			if(novel){
 				if(platform==PACBIO){
-					insert=generatePacBioHiFiLength(minLength, meanLength, maxLength, pacBioLengthSigma, randy);
+					insert=generatePacBioHiFiLength(minLength, meanLength, maxLength, logNormalSigma, randy);
 				}else{
-					insert=generateONTLength(minLength, meanLength, maxLength, ontLongTailFactor, randy);
+					insert=generateONTLength(minLength, meanLength, maxLength, ontLongTailFactor, logNormalSigma, randy);
 				}
 				if(insert>=contig.length()){return null;}
 				start=randy.nextInt(contig.length()-insert);
@@ -1637,8 +1637,8 @@ public class RandomReadsMG{
 	private int meanQScore=25;
 	/** Quality score range around the mean (±qScoreRange) */
 	private int qScoreRange=0;
-	/** Standard deviation for PacBio read length log-normal distribution */
-	private float pacBioLengthSigma=0.5f;
+	/** Standard deviation for log-normal read length distribution (used by both ONT and PacBio) */
+	private float logNormalSigma=0.5f;
 	/** Long tail factor for ONT read length distribution */
 	private float ontLongTailFactor=0.2f;
 	/** Minimum read length for long-read platforms */
