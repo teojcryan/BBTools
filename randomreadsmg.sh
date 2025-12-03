@@ -65,7 +65,8 @@ minlen=1000     Minimum read length for PacBio/ONT modes.
 meanlen=15000   Mean read length for PacBio/ONT modes.
 maxlen=100000   Max read length for PacBio/ONT modes.
 tailfactor=0.2  Controls heavy tail for ONT length distribution.
-pbsigma=0.5     Log-normal standard deviation for PacBio length distribution.
+lnsigma=0.5     Log-normal standard deviation for read length distribution (ONT and PacBio).
+                (pbsigma is accepted as an alias for backward compatibility)
 
 Error parameters (all platforms)
 adderrors=f     Set to true to add model-specific errors.
